@@ -4,4 +4,10 @@
 
 # Toolbox
 
+Custom scripts for linux sysadmins 
 
+[!TIP]
+Generally, those scripts are designed only for presentation purposes and do not make any changes to the operating system.
+
+List scripts: 
+- "[nofile-by-session.sh](nofile-by-session.sh)" -  each active session(sid) on a Linux system and amount number of files open by session . 
