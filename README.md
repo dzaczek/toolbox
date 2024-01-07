@@ -10,4 +10,5 @@ Custom scripts for linux sysadmins
 Generally, those scripts are designed only for presentation purposes and do not make any changes to the operating system.
 
 List scripts: 
-- "[nofile-by-session.sh](nofile-by-session.sh)" -  each active session(sid) on a Linux system and amount number of files open by session . 
+- "[nofile-by-session.sh](nofile-by-session.sh)" -  each active session(sid) on a Linux system and amount number of files open by session (ps remmber limits nofile are for the pids not for session) .
+- "[nofile-by-limit.sh](no-file-by-limit.sh)" - each active processv + amount of filedescriptors + limit  for this on pid 
