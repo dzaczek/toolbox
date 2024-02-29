@@ -1,0 +1,88 @@
+---
+  - hosts: all
+    become: true
+    name: Install SentinelOne Linux agent
+
+    tasks:
+    -   name: Get dmesg
+        ansible.builtin.command: dmesg
+        register: dmesg_output
+
+    -   name: Assert that host is stable
+        ansible.builtin.assert:
+         that:
+          - "'FUNCTION TRACING IS CORRUPTED' not in dmesg_output.stdout"
+         fail_msg: 'System Instability Detected'
+
+    -   name: Check that the sentinelctl exists
+        stat:
+          path: /opt/sentinelone/bin/sentinelctl
+        become: true
+        register: sentinelctl_exists
+
+    -   name: Create temporary folder to place the installer
+        file:
+          path: /tmp/sentinel_installer
+          state: directory
+          mode: '0755'
+    #On amcos problem before you need have to sudo on localhost
+    - name: Find DEB packages in local ./s1bin directory
+      find:
+        paths: "./s1bin"
+        patterns: "*.deb"
+      delegate_to: localhost
+      register: deb_files
+
+
+    - name: Sort DEB files by version number
+      shell: |
+        echo "{{ deb_files.files | map(attribute='path') | list | join(' ') }}" | tr ' ' '\n' | sort -V | tail -n 1
+      delegate_to: localhost
+      register: latest_deb_file
+
+    - name: Show the highest version DEB package
+      debug:
+        var: latest_deb_file.stdout
+
+    - name: Copy highest version DEB package to remote host
+      copy:
+        src: "{{ latest_deb_file.stdout }}"
+        dest: "/tmp/sentinel_installer/sentinelone_installer.deb"
+      when:  ansible_facts['os_family'] == "Debian" and latest_deb_file is defined
+
+    -   name: Install the Linux Agent on Debian based distro
+        command: dpkg -i /tmp/sentinel_installer/sentinelone_installer.deb
+        become: true
+        when: sentinelctl_exists.stat.exists == False and ansible_facts['os_family'] == "Debian"
+#
+    -   name: Apply the registration token to the agent
+        command: /opt/sentinelone/bin/sentinelctl management token set {{ registration_token }}
+        become_user: root
+        become_method: sudo
+        become: true
+        when: sentinelctl_exists.stat.exists == False
+
+    -   name: Start the SentinelOne agent
+        command: /opt/sentinelone/bin/sentinelctl control start
+        become_user: root
+        become_method: sudo
+        become: true
+        when: sentinelctl_exists.stat.exists == False
+
+    -   name: Upgrade the SentinelOne agent
+        command: /opt/sentinelone/bin/sentinelctl control upgrade /tmp/sentinel_installer/sentinelone_installer.deb
+        become_user: root
+        become_method: sudo
+        become: true
+        when: sentinelctl_exists.stat.exists == True
+
+
+
+
+    -   name: Delete the installer folder
+        file:
+          path: /tmp/sentinel_installer
+          state: absent
+        become_user: root
+        become_method: sudo
+        become: true
