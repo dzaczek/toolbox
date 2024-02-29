@@ -1,0 +1,32 @@
+---
+- name: Check SentinelOne Version
+  hosts: all
+  tasks:
+    - name: Check if sentinelctl exists
+      ansible.builtin.stat:
+        path: /opt/sentinelone/bin/sentinelctl
+      register: sentinelctl_file
+
+    - name: Get SentinelOne Version
+      ansible.builtin.command: /opt/sentinelone/bin/sentinelctl version
+      register: sentinelctl_version
+      when: sentinelctl_file.stat.exists
+
+    - name: Set version output when file exists
+      set_fact:
+        version_output: "{{ sentinelctl_version.stdout_lines }}"
+      when: sentinelctl_file.stat.exists
+
+    - name: Format output when file exists
+      set_fact:
+        formatted_output: "{{ ansible_hostname }}:NAME {{ version_output | join(',') }}"
+      when: sentinelctl_file.stat.exists
+
+    - name: Set formatted output to NONE when file does not exist
+      set_fact:
+        formatted_output: "{{ ansible_hostname }}, NONE"
+      when: not sentinelctl_file.stat.exists
+
+    - name: Show formatted output
+      ansible.builtin.debug:
+        msg: "{{ formatted_output }}"
