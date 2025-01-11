@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+#
+#
+# Description:
+#   Parses the output of "lshw -class network" and displays a table
+#   with columns: Physical ID, Product, Bus info, Size, and Capacity.
+#
+
+# Run lshw (as current user; use sudo if needed) and pipe into AWK
+lshw -class network 2>/dev/null | awk '
+BEGIN {
+  # Print table header with aligned columns
+  printf("%-12s %-45s %-20s %-10s %-10s\n", \
+    "Physical ID", "Product", "Bus info", "Size", "Capacity")
+  printf("%-12s %-45s %-20s %-10s %-10s\n", \
+    "-----------", "-------", "--------", "----", "--------")
+}
+
+# Detect a new network device line.
+/^[[:space:]]*\*-network/ {
+  # If we already have data for a previous device, print it in a row
+  if (gotData) {
+    printf("%-12s %-45s %-20s %-10s %-10s\n", \
+      phy_id, product, bus_info, size, capacity)
+    # Reset fields for the next device
+    phy_id = product = bus_info = size = capacity = ""
+  }
+  gotData = 1
+}
+
+# Extract each field
+/physical id:/ {
+  sub(/^.*physical id:[[:space:]]*/, "")
+  phy_id = $0
+}
+
+/product:/ {
+  sub(/^.*product:[[:space:]]*/, "")
+  product = $0
+}
+
+/bus info:/ {
+  sub(/^.*bus info:[[:space:]]*/, "")
+  bus_info = $0
+}
+
+/size:/ {
+  sub(/^.*size:[[:space:]]*/, "")
+  size = $0
+}
+
+/capacity:/ {
+  sub(/^.*capacity:[[:space:]]*/, "")
+  capacity = $0
+}
+
+END {
+  # Print the last collected device
+  if (gotData) {
+    printf("%-12s %-45s %-20s %-10s %-10s\n", \
+      phy_id, product, bus_info, size, capacity)
+  }
+}
+'
