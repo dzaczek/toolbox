@@ -2,10 +2,15 @@
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y vim git curl nodejs npm universal-ctags shellcheck shfmt
 
-wget https://github.com/gitleaks/gitleaks/releases/download/v8.23.2/gitleaks_8.23.2_linux_x64.tar.gz
-tar -xzf gitleaks_8.23.2_linux_x64.tar.gz
 
+# Fetch the latest Gitleaks release
+GITLEAKS_LATEST=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+wget https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_LATEST}/gitleaks_${GITLEAKS_LATEST}_linux_x64.tar.gz
+tar -xzf gitleaks_${GITLEAKS_LATEST}_linux_x64.tar.gz
 sudo mv gitleaks /usr/local/bin/
+rm gitleaks_${GITLEAKS_LATEST}_linux_x64.tar.gz  # Clean up
+
+
 
 curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
     https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim
