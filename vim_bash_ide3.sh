@@ -111,7 +111,7 @@ endfunction
 
 " Gitleaks integration
 function! RunGitleaks()
-    let l:output = system('gitleaks detect --source ' . shellescape(expand('%')))
+    let l:output = system('gitleaks detect --no-color --redact --no-git --verbose  --source ' . shellescape(expand('%')))
     new
     setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
     put =l:output
