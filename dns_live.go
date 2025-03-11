@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,14 +18,14 @@ import (
 const domainsFile = "domains.txt"
 const maxColumnWidth = 20
 
-// HistoryEntry represents a single change in a record
+// HistoryEntry represents a single change in a record set
 type HistoryEntry struct {
 	Timestamp time.Time `json:"timestamp"`
-	Value     string    `json:"value"`
+	Values    []string  `json:"values"` // Store the full set of records
 }
 
 // RecordHistory stores the history of changes for a record type
-type RecordHistory map[string][][]HistoryEntry // record type -> index -> history
+type RecordHistory map[string][]HistoryEntry // record type -> history of sets
 
 func truncateString(s string, maxLen int) string {
 	if len(s) > maxLen {
@@ -49,12 +50,12 @@ func main() {
 		}
 		if history[domain] == nil {
 			history[domain] = make(RecordHistory)
-			history[domain]["NS"] = [][]HistoryEntry{}
-			history[domain]["IP"] = [][]HistoryEntry{}
-			history[domain]["PTR"] = [][]HistoryEntry{}
-			history[domain]["A"] = [][]HistoryEntry{}
-			history[domain]["MX"] = [][]HistoryEntry{}
-			history[domain]["TXT"] = [][]HistoryEntry{}
+			history[domain]["NS"] = []HistoryEntry{}
+			history[domain]["IP"] = []HistoryEntry{}
+			history[domain]["PTR"] = []HistoryEntry{}
+			history[domain]["A"] = []HistoryEntry{}
+			history[domain]["MX"] = []HistoryEntry{}
+			history[domain]["TXT"] = []HistoryEntry{}
 		}
 	}
 
@@ -63,18 +64,17 @@ func main() {
 		SetBorders(true).
 		SetSelectable(true, true)
 
-	// Track blinking state
 	type blinkState struct {
-		Row, Col int
+		Row, Col    int
 		NormalColor tcell.Color
-		BlinkRate time.Duration // 1s for 1 blink, 500ms for 2 blinks
+		BlinkRate   time.Duration
 	}
 	var blinkingCells []blinkState
 
 	updateTable := func() {
 		table.Clear()
 		nsData, ipData, ptrData, aData, mxData, txtData, maxCounts := gatherDnsData(domains)
-		blinkingCells = nil // Reset blinking cells
+		blinkingCells = nil
 
 		// Header row
 		table.SetCell(0, 0, tview.NewTableCell("INFORMATION").SetTextColor(tcell.ColorYellow))
@@ -92,11 +92,11 @@ func main() {
 				if i < len(nsData[domain]) {
 					value = nsData[domain][i]
 				}
-				updateHistory(history, domain, "NS", i, value)
+				updateHistory(history, domain, "NS", nsData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorGreen)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["NS"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorGreen, getBlinkRate(history[domain]["NS"], i)})
+				if shouldBlink(history[domain]["NS"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorGreen, getBlinkRate(history[domain]["NS"])})
 				}
 			}
 		}
@@ -111,11 +111,11 @@ func main() {
 				if i < len(ipData[domain]) {
 					value = ipData[domain][i]
 				}
-				updateHistory(history, domain, "IP", i, value)
+				updateHistory(history, domain, "IP", ipData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorBlue)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["IP"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorBlue, getBlinkRate(history[domain]["IP"], i)})
+				if shouldBlink(history[domain]["IP"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorBlue, getBlinkRate(history[domain]["IP"])})
 				}
 			}
 		}
@@ -130,11 +130,11 @@ func main() {
 				if i < len(ptrData[domain]) {
 					value = ptrData[domain][i]
 				}
-				updateHistory(history, domain, "PTR", i, value)
+				updateHistory(history, domain, "PTR", ptrData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorPurple)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["PTR"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorPurple, getBlinkRate(history[domain]["PTR"], i)})
+				if shouldBlink(history[domain]["PTR"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorPurple, getBlinkRate(history[domain]["PTR"])})
 				}
 			}
 		}
@@ -149,11 +149,11 @@ func main() {
 				if i < len(aData[domain]) {
 					value = aData[domain][i]
 				}
-				updateHistory(history, domain, "A", i, value)
+				updateHistory(history, domain, "A", aData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorRed)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["A"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorRed, getBlinkRate(history[domain]["A"], i)})
+				if shouldBlink(history[domain]["A"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorRed, getBlinkRate(history[domain]["A"])})
 				}
 			}
 		}
@@ -168,11 +168,11 @@ func main() {
 				if i < len(mxData[domain]) {
 					value = mxData[domain][i]
 				}
-				updateHistory(history, domain, "MX", i, value)
+				updateHistory(history, domain, "MX", mxData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorAqua)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["MX"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorAqua, getBlinkRate(history[domain]["MX"], i)})
+				if shouldBlink(history[domain]["MX"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorAqua, getBlinkRate(history[domain]["MX"])})
 				}
 			}
 		}
@@ -187,11 +187,11 @@ func main() {
 				if i < len(txtData[domain]) {
 					value = txtData[domain][i]
 				}
-				updateHistory(history, domain, "TXT", i, value)
+				updateHistory(history, domain, "TXT", txtData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorWhite)
 				table.SetCell(row, col+1, cell)
-				if shouldBlink(history[domain]["TXT"], i) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorWhite, getBlinkRate(history[domain]["TXT"], i)})
+				if shouldBlink(history[domain]["TXT"]) {
+					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorWhite, getBlinkRate(history[domain]["TXT"])})
 				}
 			}
 		}
@@ -206,7 +206,7 @@ func main() {
 
 	// Blinking goroutine
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond) // Fastest blink rate (2 blinks/sec)
+		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		blinkOn := false
 		for range ticker.C {
@@ -232,12 +232,12 @@ func main() {
 		var recordType string
 		var index int
 		maxCounts := map[string]int{
-			"NS":  table.GetRowCount()/6,
-			"IP":  table.GetRowCount()/6,
-			"PTR": table.GetRowCount()/6,
-			"A":   table.GetRowCount()/6,
-			"MX":  table.GetRowCount()/6,
-			"TXT": table.GetRowCount()/6,
+			"NS":  table.GetRowCount() / 6,
+			"IP":  table.GetRowCount() / 6,
+			"PTR": table.GetRowCount() / 6,
+			"A":   table.GetRowCount() / 6,
+			"MX":  table.GetRowCount() / 6,
+			"TXT": table.GetRowCount() / 6,
 		}
 		switch {
 		case row <= maxCounts["NS"]:
@@ -263,12 +263,11 @@ func main() {
 		modal := tview.NewModal()
 		historyKey := fmt.Sprintf("%s #%d", recordType, index+1)
 		hist := history[domain][recordType]
-		if len(hist) > index && len(hist[index]) > 0 {
-			fullContent := hist[index][len(hist[index])-1].Value
+		if len(hist) > 0 {
 			var historyText strings.Builder
-			historyText.WriteString(fmt.Sprintf("Full Content for %s - %s:\n%s\n\nHistory:\n", domain, historyKey, fullContent))
-			for _, entry := range hist[index] {
-				historyText.WriteString(fmt.Sprintf("%s: %s\n", entry.Timestamp.Format(time.RFC1123), entry.Value))
+			historyText.WriteString(fmt.Sprintf("History for %s - %s:\n\n", domain, historyKey))
+			for _, entry := range hist {
+				historyText.WriteString(fmt.Sprintf("%s: %v\n", entry.Timestamp.Format(time.RFC1123), entry.Values))
 			}
 			modal.SetText(historyText.String())
 		} else {
@@ -297,16 +296,16 @@ func main() {
 	}
 }
 
-// shouldBlink checks if a record should blink
-func shouldBlink(hist [][]HistoryEntry, index int) bool {
-	if len(hist) <= index || len(hist[index]) < 2 {
+// shouldBlink checks if a record set should blink
+func shouldBlink(hist []HistoryEntry) bool {
+	if len(hist) < 2 {
 		return false
 	}
-	lastChange := hist[index][len(hist[index])-1].Timestamp
+	lastChange := hist[len(hist)-1].Timestamp
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
 	oneDayAgo := time.Now().Add(-24 * time.Hour)
 	changesInDay := 0
-	for _, entry := range hist[index] {
+	for _, entry := range hist {
 		if entry.Timestamp.After(oneDayAgo) {
 			changesInDay++
 		}
@@ -315,24 +314,24 @@ func shouldBlink(hist [][]HistoryEntry, index int) bool {
 }
 
 // getBlinkRate determines the blink rate
-func getBlinkRate(hist [][]HistoryEntry, index int) time.Duration {
-	if len(hist) <= index || len(hist[index]) < 2 {
+func getBlinkRate(hist []HistoryEntry) time.Duration {
+	if len(hist) < 2 {
 		return 0
 	}
-	lastChange := hist[index][len(hist[index])-1].Timestamp
+	lastChange := hist[len(hist)-1].Timestamp
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
 	oneDayAgo := time.Now().Add(-24 * time.Hour)
 	changesInDay := 0
-	for _, entry := range hist[index] {
+	for _, entry := range hist {
 		if entry.Timestamp.After(oneDayAgo) {
 			changesInDay++
 		}
 	}
 	if lastChange.After(oneHourAgo) {
-		return 1 * time.Second // 1 blink/sec
+		return 1 * time.Second
 	}
 	if changesInDay > 1 {
-		return 500 * time.Millisecond // 2 blinks/sec
+		return 500 * time.Millisecond
 	}
 	return 0
 }
@@ -416,20 +415,42 @@ func gatherDnsData(domains []string) (nsData, ipData, ptrData, aData, mxData, tx
 	return
 }
 
-// updateHistory adds a new entry if the value changes
-func updateHistory(history map[string]RecordHistory, domain, recordType string, index int, value string) {
-	if len(history[domain][recordType]) <= index {
-		for len(history[domain][recordType]) <= index {
-			history[domain][recordType] = append(history[domain][recordType], []HistoryEntry{})
-		}
-	}
-	hist := history[domain][recordType][index]
-	if len(hist) == 0 || hist[len(hist)-1].Value != value {
-		history[domain][recordType][index] = append(hist, HistoryEntry{
+// updateHistory adds a new entry if the record set changes (ignoring order)
+func updateHistory(history map[string]RecordHistory, domain, recordType string, values []string) {
+	hist := history[domain][recordType]
+	if len(hist) == 0 {
+		history[domain][recordType] = append(hist, HistoryEntry{
 			Timestamp: time.Now(),
-			Value:     value,
+			Values:    values,
+		})
+		return
+	}
+
+	// Sort both current and last values to ignore order
+	sort.Strings(values)
+	lastValues := hist[len(hist)-1].Values
+	sort.Strings(lastValues)
+
+	// Compare sets
+	if !equalSlices(values, lastValues) {
+		history[domain][recordType] = append(hist, HistoryEntry{
+			Timestamp: time.Now(),
+			Values:    values,
 		})
 	}
+}
+
+// equalSlices compares two sorted string slices
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // loadHistory reads history from a file
