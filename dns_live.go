@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,14 +19,14 @@ import (
 const domainsFile = "domains.txt"
 const maxColumnWidth = 20
 
-// HistoryEntry represents a single change in a record set
+var customDNS = "8.8.8.8"
+
 type HistoryEntry struct {
 	Timestamp time.Time `json:"timestamp"`
-	Values    []string  `json:"values"` // Store the full set of records
+	Values    []string  `json:"values"`
 }
 
-// RecordHistory stores the history of changes for a record type
-type RecordHistory map[string][]HistoryEntry // record type -> history of sets
+type RecordHistory map[string][]HistoryEntry
 
 func truncateString(s string, maxLen int) string {
 	if len(s) > maxLen {
@@ -35,6 +36,12 @@ func truncateString(s string, maxLen int) string {
 }
 
 func main() {
+	dnsFlag := flag.String("dns", customDNS, "Custom DNS server for dig queries (e.g., 8.8.8.8)")
+	flag.Parse()
+	if *dnsFlag != "" {
+		customDNS = *dnsFlag
+	}
+
 	domains, err := readDomains(domainsFile)
 	if err != nil {
 		fmt.Printf("Error reading domains: %v\n", err)
@@ -44,13 +51,10 @@ func main() {
 	history := make(map[string]RecordHistory)
 	for _, domain := range domains {
 		history[domain], err = loadHistory(domain)
-		if err != nil {
-			fmt.Printf("Error loading history for %s: %v\n", domain, err)
-			history[domain] = make(RecordHistory)
-		}
-		if history[domain] == nil {
+		if err != nil || history[domain] == nil {
 			history[domain] = make(RecordHistory)
 			history[domain]["NS"] = []HistoryEntry{}
+			history[domain]["SOA"] = []HistoryEntry{}
 			history[domain]["IP"] = []HistoryEntry{}
 			history[domain]["PTR"] = []HistoryEntry{}
 			history[domain]["A"] = []HistoryEntry{}
@@ -60,9 +64,7 @@ func main() {
 	}
 
 	app := tview.NewApplication()
-	table := tview.NewTable().
-		SetBorders(true).
-		SetSelectable(true, true)
+	table := tview.NewTable().SetBorders(true).SetSelectable(true, true)
 
 	type blinkState struct {
 		Row, Col    int
@@ -71,22 +73,20 @@ func main() {
 	}
 	var blinkingCells []blinkState
 
-	updateTable := func() {
+	updateTable := func() map[string]int {
 		table.Clear()
-		nsData, ipData, ptrData, aData, mxData, txtData, maxCounts := gatherDnsData(domains)
+		nsData, soaData, ipData, ptrData, aData, mxData, txtData, maxCounts := gatherDnsData(domains)
 		blinkingCells = nil
 
-		// Header row
 		table.SetCell(0, 0, tview.NewTableCell("INFORMATION").SetTextColor(tcell.ColorYellow))
 		for col, domain := range domains {
 			table.SetCell(0, col+1, tview.NewTableCell(truncateString(domain, maxColumnWidth)).SetTextColor(tcell.ColorYellow))
 		}
 
-		// NS Server rows (green)
 		rowOffset := 0
 		for i := 0; i < maxCounts["NS"]; i++ {
-			row := rowOffset + i + 1
-			table.SetCell(row, 0, tview.NewTableCell(fmt.Sprintf("NS Server #%d", i+1)).SetTextColor(tcell.ColorGreen))
+			nsRow := rowOffset + i*2 + 1
+			table.SetCell(nsRow, 0, tview.NewTableCell(fmt.Sprintf("NS Server #%d", i+1)).SetTextColor(tcell.ColorGreen))
 			for col, domain := range domains {
 				value := "N/A"
 				if i < len(nsData[domain]) {
@@ -94,15 +94,29 @@ func main() {
 				}
 				updateHistory(history, domain, "NS", nsData[domain])
 				cell := tview.NewTableCell(truncateString(value, maxColumnWidth)).SetTextColor(tcell.ColorGreen)
-				table.SetCell(row, col+1, cell)
+				table.SetCell(nsRow, col+1, cell)
 				if shouldBlink(history[domain]["NS"]) {
-					blinkingCells = append(blinkingCells, blinkState{row, col+1, tcell.ColorGreen, getBlinkRate(history[domain]["NS"])})
+					blinkingCells = append(blinkingCells, blinkState{nsRow, col+1, tcell.ColorGreen, getBlinkRate(history[domain]["NS"])})
+				}
+			}
+
+			soaRow := nsRow + 1
+			table.SetCell(soaRow, 0, tview.NewTableCell(fmt.Sprintf("SOA Serial #%d", i+1)).SetTextColor(tcell.ColorOrange))
+			for col, domain := range domains {
+				soaValue := "N/A"
+				if i < len(soaData[domain]) {
+					soaValue = soaData[domain][i]
+				}
+				updateHistory(history, domain, "SOA", soaData[domain])
+				cell := tview.NewTableCell(truncateString(soaValue, maxColumnWidth)).SetTextColor(tcell.ColorOrange)
+				table.SetCell(soaRow, col+1, cell)
+				if shouldBlink(history[domain]["SOA"]) {
+					blinkingCells = append(blinkingCells, blinkState{soaRow, col+1, tcell.ColorOrange, getBlinkRate(history[domain]["SOA"])})
 				}
 			}
 		}
 
-		// IP Address rows (blue)
-		rowOffset += maxCounts["NS"]
+		rowOffset += maxCounts["NS"] * 2
 		for i := 0; i < maxCounts["IP"]; i++ {
 			row := rowOffset + i + 1
 			table.SetCell(row, 0, tview.NewTableCell(fmt.Sprintf("IP Address #%d", i+1)).SetTextColor(tcell.ColorBlue))
@@ -120,7 +134,6 @@ func main() {
 			}
 		}
 
-		// PTR Record rows (purple)
 		rowOffset += maxCounts["IP"]
 		for i := 0; i < maxCounts["PTR"]; i++ {
 			row := rowOffset + i + 1
@@ -139,7 +152,6 @@ func main() {
 			}
 		}
 
-		// A Record rows (red)
 		rowOffset += maxCounts["PTR"]
 		for i := 0; i < maxCounts["A"]; i++ {
 			row := rowOffset + i + 1
@@ -158,7 +170,6 @@ func main() {
 			}
 		}
 
-		// MX Record rows (aqua)
 		rowOffset += maxCounts["A"]
 		for i := 0; i < maxCounts["MX"]; i++ {
 			row := rowOffset + i + 1
@@ -177,7 +188,6 @@ func main() {
 			}
 		}
 
-		// TXT Record rows (white)
 		rowOffset += maxCounts["MX"]
 		for i := 0; i < maxCounts["TXT"]; i++ {
 			row := rowOffset + i + 1
@@ -196,15 +206,15 @@ func main() {
 			}
 		}
 
-		// Save history
 		for domain := range history {
 			if err := saveHistory(domain, history[domain]); err != nil {
 				fmt.Printf("Error saving history for %s: %v\n", domain, err)
 			}
 		}
+
+		return maxCounts
 	}
 
-	// Blinking goroutine
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -223,45 +233,53 @@ func main() {
 		}
 	}()
 
-	// Handle cell selection
+	var latestMaxCounts map[string]int
+
 	table.SetSelectedFunc(func(row, col int) {
 		if row == 0 || col == 0 {
 			return
 		}
 		domain := domains[col-1]
 		var recordType string
-		var index int
-		maxCounts := map[string]int{
-			"NS":  table.GetRowCount() / 6,
-			"IP":  table.GetRowCount() / 6,
-			"PTR": table.GetRowCount() / 6,
-			"A":   table.GetRowCount() / 6,
-			"MX":  table.GetRowCount() / 6,
-			"TXT": table.GetRowCount() / 6,
+
+		if latestMaxCounts == nil {
+			latestMaxCounts = updateTable()
 		}
+
+		nsEnd := latestMaxCounts["NS"] * 2
+		ipStart := nsEnd + 1
+		ipEnd := nsEnd + latestMaxCounts["IP"]
+		ptrStart := ipEnd + 1
+		ptrEnd := ipEnd + latestMaxCounts["PTR"]
+		aStart := ptrEnd + 1
+		aEnd := ptrEnd + latestMaxCounts["A"]
+		mxStart := aEnd + 1
+		mxEnd := aEnd + latestMaxCounts["MX"]
+		txtStart := mxEnd + 1
+
 		switch {
-		case row <= maxCounts["NS"]:
-			recordType = "NS"
-			index = row - 1
-		case row <= maxCounts["NS"]+maxCounts["IP"]:
+		case row <= nsEnd:
+			if row%2 == 1 {
+				recordType = "NS"
+			} else {
+				recordType = "SOA"
+			}
+		case row >= ipStart && row <= ipEnd:
 			recordType = "IP"
-			index = row - maxCounts["NS"] - 1
-		case row <= maxCounts["NS"]+maxCounts["IP"]+maxCounts["PTR"]:
+		case row >= ptrStart && row <= ptrEnd:
 			recordType = "PTR"
-			index = row - maxCounts["NS"] - maxCounts["IP"] - 1
-		case row <= maxCounts["NS"]+maxCounts["IP"]+maxCounts["PTR"]+maxCounts["A"]:
+		case row >= aStart && row <= aEnd:
 			recordType = "A"
-			index = row - maxCounts["NS"] - maxCounts["IP"] - maxCounts["PTR"] - 1
-		case row <= maxCounts["NS"]+maxCounts["IP"]+maxCounts["PTR"]+maxCounts["A"]+maxCounts["MX"]:
+		case row >= mxStart && row <= mxEnd:
 			recordType = "MX"
-			index = row - maxCounts["NS"] - maxCounts["IP"] - maxCounts["PTR"] - maxCounts["A"] - 1
-		default:
+		case row >= txtStart:
 			recordType = "TXT"
-			index = row - maxCounts["NS"] - maxCounts["IP"] - maxCounts["PTR"] - maxCounts["A"] - maxCounts["MX"] - 1
+		default:
+			recordType = "Unknown"
 		}
 
 		modal := tview.NewModal()
-		historyKey := fmt.Sprintf("%s #%d", recordType, index+1)
+		historyKey := fmt.Sprintf("%s", recordType)
 		hist := history[domain][recordType]
 		if len(hist) > 0 {
 			var historyText strings.Builder
@@ -279,14 +297,12 @@ func main() {
 		app.SetRoot(modal, false)
 	})
 
-	// Initial update
-	updateTable()
+	latestMaxCounts = updateTable()
 
-	// Periodic updates
 	go func() {
 		for {
 			time.Sleep(30 * time.Second)
-			updateTable()
+			latestMaxCounts = updateTable()
 			app.Draw()
 		}
 	}()
@@ -296,7 +312,6 @@ func main() {
 	}
 }
 
-// shouldBlink checks if a record set should blink
 func shouldBlink(hist []HistoryEntry) bool {
 	if len(hist) < 2 {
 		return false
@@ -313,7 +328,6 @@ func shouldBlink(hist []HistoryEntry) bool {
 	return lastChange.After(oneHourAgo) || changesInDay > 1
 }
 
-// getBlinkRate determines the blink rate
 func getBlinkRate(hist []HistoryEntry) time.Duration {
 	if len(hist) < 2 {
 		return 0
@@ -336,7 +350,6 @@ func getBlinkRate(hist []HistoryEntry) time.Duration {
 	return 0
 }
 
-// readDomains reads domains from the specified file
 func readDomains(filename string) ([]string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -355,9 +368,9 @@ func readDomains(filename string) ([]string, error) {
 	return domains, scanner.Err()
 }
 
-// gatherDnsData fetches all DNS record types
-func gatherDnsData(domains []string) (nsData, ipData, ptrData, aData, mxData, txtData map[string][]string, maxCounts map[string]int) {
+func gatherDnsData(domains []string) (nsData, soaData, ipData, ptrData, aData, mxData, txtData map[string][]string, maxCounts map[string]int) {
 	nsData = make(map[string][]string)
+	soaData = make(map[string][]string)
 	ipData = make(map[string][]string)
 	ptrData = make(map[string][]string)
 	aData = make(map[string][]string)
@@ -371,6 +384,13 @@ func gatherDnsData(domains []string) (nsData, ipData, ptrData, aData, mxData, tx
 		if len(nsRecords) > maxCounts["NS"] {
 			maxCounts["NS"] = len(nsRecords)
 		}
+
+		soaData[domain] = make([]string, len(nsRecords))
+		for i, ns := range nsRecords {
+			soa := digSOA(ns, domain)
+			soaData[domain][i] = soa
+		}
+
 		ipData[domain] = make([]string, len(nsRecords))
 		ptrData[domain] = make([]string, len(nsRecords))
 		for i, ns := range nsRecords {
@@ -415,7 +435,6 @@ func gatherDnsData(domains []string) (nsData, ipData, ptrData, aData, mxData, tx
 	return
 }
 
-// updateHistory adds a new entry if the record set changes (ignoring order)
 func updateHistory(history map[string]RecordHistory, domain, recordType string, values []string) {
 	hist := history[domain][recordType]
 	if len(hist) == 0 {
@@ -426,13 +445,16 @@ func updateHistory(history map[string]RecordHistory, domain, recordType string, 
 		return
 	}
 
-	// Sort both current and last values to ignore order
-	sort.Strings(values)
-	lastValues := hist[len(hist)-1].Values
+	// Create copies to avoid modifying the original slices
+	currentValues := make([]string, len(values))
+	copy(currentValues, values)
+	sort.Strings(currentValues)
+
+	lastValues := make([]string, len(hist[len(hist)-1].Values))
+	copy(lastValues, hist[len(hist)-1].Values)
 	sort.Strings(lastValues)
 
-	// Compare sets
-	if !equalSlices(values, lastValues) {
+	if !equalSlices(currentValues, lastValues) {
 		history[domain][recordType] = append(hist, HistoryEntry{
 			Timestamp: time.Now(),
 			Values:    values,
@@ -440,7 +462,6 @@ func updateHistory(history map[string]RecordHistory, domain, recordType string, 
 	}
 }
 
-// equalSlices compares two sorted string slices
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -453,7 +474,6 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-// loadHistory reads history from a file
 func loadHistory(domain string) (RecordHistory, error) {
 	filename := fmt.Sprintf("%s_history.json", domain)
 	data, err := os.ReadFile(filename)
@@ -469,7 +489,6 @@ func loadHistory(domain string) (RecordHistory, error) {
 	return hist, nil
 }
 
-// saveHistory writes history to a file
 func saveHistory(domain string, hist RecordHistory) error {
 	filename := fmt.Sprintf("%s_history.json", domain)
 	data, err := json.MarshalIndent(hist, "", "  ")
@@ -479,44 +498,57 @@ func saveHistory(domain string, hist RecordHistory) error {
 	return os.WriteFile(filename, data, 0644)
 }
 
-// digNs runs "dig +short NS domain"
 func digNs(domain string) []string {
-	return runDig("+short NS " + domain)
+	return runDig(fmt.Sprintf("@%s +short NS %s", customDNS, domain))
 }
 
-// digA runs "dig +short A domain/ns"
 func digA(domain string) []string {
-	return runDig("+short A " + domain)
+	return runDig(fmt.Sprintf("@%s +short A %s", customDNS, domain))
 }
 
-// digMx runs "dig +short MX domain"
 func digMx(domain string) []string {
-	return runDig("+short MX " + domain)
+	return runDig(fmt.Sprintf("@%s +short MX %s", customDNS, domain))
 }
 
-// digTxt runs "dig +short TXT domain"
 func digTxt(domain string) []string {
-	return runDig("+short TXT " + domain)
+	return runDig(fmt.Sprintf("@%s +short TXT %s", customDNS, domain))
 }
 
-// digPtr runs "dig +short -x ip"
 func digPtr(ip string) string {
-	ptrs := runDig("+short -x " + ip)
+	ptrs := runDig(fmt.Sprintf("@%s +short -x %s", customDNS, ip))
 	if len(ptrs) > 0 {
 		return strings.TrimSuffix(ptrs[0], ".")
 	}
-	return "No PTR"
+	return "N/A"
 }
 
-// runDig executes a dig command
+func digSOA(nameserver, domain string) string {
+	output := runDig(fmt.Sprintf("@%s %s SOA +noall +answer", nameserver, domain))
+	if len(output) == 0 {
+		fmt.Printf("digSOA: No output for %s @ %s\n", domain, nameserver)
+		return "N/A"
+	}
+	for _, line := range output {
+		parts := strings.Fields(line)
+		if len(parts) >= 7 && parts[3] == "SOA" {
+			//			fmt.Printf("digSOA: %s @ %s -> %s\n", domain, nameserver, line)
+			return parts[6] // Serial is the 7th field
+		}
+	}
+	fmt.Printf("digSOA: Invalid SOA output for %s @ %s: %v\n", domain, nameserver, output)
+	return "N/A"
+}
+
 func runDig(args string) []string {
 	cmd := exec.Command("dig", strings.Fields(args)...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
+		fmt.Printf("dig error: %v, args: %s\n", err, args)
 		return []string{}
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	return lines
 }
+
