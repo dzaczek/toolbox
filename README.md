@@ -68,7 +68,9 @@ Generally, those scripts are designed only for presentation purposes and do not 
 - **vim_bash_ide3.sh**
   - Configures Vim as a Bash script IDE by installing dependencies like `coc.nvim`, `NERDTree`, `Tagbar`, and `ALE` for linting and formatting.
   - Includes Gitleaks integration and sensitive data detection to enhance security during script development.
-
+- **gitlab_registry_images_audit.sh*
+  - This script performs an audit of a GitLab instance's container registries.
+       
 - count_files_by_days.sh This Bash script scans a specified directory and reports the number of files created on each of the last 180 days.
   **Usage:**
   ```bash
