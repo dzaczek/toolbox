@@ -1,4 +1,12 @@
 #!/bin/bash
+
+
+# ===================================================================================
+#
+# GitLab Registry Audit & Usage Analysis Tool
+#
+# ===================================================================================
+#
 # Description:
 # This script performs an audit of a GitLab instance's container registries.
 # It iterates through all projects, their repositories, and image tags to
