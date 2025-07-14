@@ -11,7 +11,14 @@
 # This script performs an audit of a GitLab instance's container registries.
 # It iterates through all projects, their repositories, and image tags to
 # gather detailed information about storage usage.
-
+#
+#
+#
+# Data Collection:
+#     - Fetches a list of all projects on the GitLab instance.
+#     - For each project, it retrieves a list of container repositories.
+#     - For each repository, it pulls all associated tags and their details,
+#       including size, creation date, digest (SHA), and location.
 # Options:
 #
 #   -v (Verbose): When used with the terminal report, this option prints a
