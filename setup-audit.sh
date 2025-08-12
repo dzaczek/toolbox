@@ -7,7 +7,8 @@
 set -euo pipefail
 
 ################################################################################
-USER_LIST="root userb usera userdupa"
+#USER_LIST="root userb usera userdupa"
+USER_LIST=$(awk -F: '/\/(ba|z|tm)?sh$/ {print $1}' /etc/passwd)
 
 ################################################################################
 # 2. Install auditd once                                                       #
