@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vcpu-by-node.sh — per-node vCPU sum + host CPUs
+# vcpu-by-node.sh — per-node vCPU sum + host CPUs + utilization %
 # Usage: ./vcpu-by-node.sh [--running|-r|--runing]
 
 set -euo pipefail
@@ -11,15 +11,17 @@ case "${1:-}" in
   * ) echo "Usage: $0 [--running|-r]"; exit 1 ;;
 esac
 
-printf "%-20s %-16s %-12s\n" "NODE" "ALLOCATED_vCPUs" "HOST_CPUs"
-printf "%-20s %-16s %-12s\n" "----" "----------------" "---------"
-
+printf "%-20s %-16s %-12s %-7s\n" "NODE" "ALLOCATED_vCPUs" "HOST_CPUs" "UTIL%"
+printf "%-20s %-16s %-12s %-7s\n" "----" "----------------" "---------" "-----"
 
 nodes_json=$(pvesh get /nodes --output-format json)
 
 while IFS=$'\t' read -r node status hostcpu; do
+  # Default ratio marker
+  ratio="-"
+
   if [[ "$status" != "online" ]]; then
-    printf "%-20s %-16s %-12s\n" "$node" "OFFLINE" "$hostcpu"
+    printf "%-20s %-16s %-12s %-7s\n" "$node" "OFFLINE" "$hostcpu" "$ratio"
     continue
   fi
 
@@ -33,7 +35,12 @@ while IFS=$'\t' read -r node status hostcpu; do
       || echo 0)
   fi
 
-  printf "%-20s %-16s %-12s\n" "$node" "$alloc" "$hostcpu"
+  # Compute UTIL% if hostcpu > 0
+  if [[ "${hostcpu:-0}" =~ ^[0-9]+$ ]] && (( hostcpu > 0 )); then
+    ratio=$(awk -v a="$alloc" -v h="$hostcpu" 'BEGIN{printf("%.1f%%",(a/h)*100)}')
+  fi
+
+  printf "%-20s %-16s %-12s %-7s\n" "$node" "$alloc" "$hostcpu" "$ratio"
 done < <(
   jq -r 'sort_by(.node)[] | "\(.node)\t\(.status)\t\(.maxcpu // 0)"' <<<"$nodes_json"
 )
