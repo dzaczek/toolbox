@@ -1,17 +1,39 @@
-#!/bin/bash
-printf "%-20s %-14s %-12s\n" "NODE" "ALLOCATED_vCPUs" "HOST_CPUs"
-printf "%-20s %-14s %-12s\n" "----" "--------------" "---------"
+#!/usr/bin/env bash
+# vcpu-by-node.sh — per-node vCPU sum + host CPUs
+# Usage: ./vcpu-by-node.sh [--running|-r|--runing]
 
-declare -A HOSTCPU
-while IFS=$'\t' read -r node maxcpu; do
-  HOSTCPU["$node"]="$maxcpu"
-done < <(pvesh get /cluster/resources --type node --output-format json \
-         | jq -r '.[] | select(.type=="node") | "\(.node)\t\(.maxcpu // 0)"')
+set -euo pipefail
+
+running=false
+case "${1:-}" in
+  -r|--running|--runing) running=true ;;
+  "" ) ;;
+  * ) echo "Usage: $0 [--running|-r]"; exit 1 ;;
+esac
+
+printf "%-20s %-16s %-12s\n" "NODE" "ALLOCATED_vCPUs" "HOST_CPUs"
+printf "%-20s %-16s %-12s\n" "----" "----------------" "---------"
 
 
-for n in $(pvesh get /nodes --output-format json | jq -r '.[].node' | sort); do
-  alloc=$(pvesh get /nodes/$n/qemu --output-format json \
-          | jq '[.[].cpus] | add // 0')
-  host=${HOSTCPU[$n]:-0}
-  printf "%-20s %-14s %-12s\n" "$n" "$alloc" "$host"
-done
+nodes_json=$(pvesh get /nodes --output-format json)
+
+while IFS=$'\t' read -r node status hostcpu; do
+  if [[ "$status" != "online" ]]; then
+    printf "%-20s %-16s %-12s\n" "$node" "OFFLINE" "$hostcpu"
+    continue
+  fi
+
+  if $running; then
+    alloc=$(pvesh get /nodes/$node/qemu --output-format json \
+      | jq '[.[] | select(.status=="running") | (.cpus // .maxcpu // 0)] | add // 0' \
+      || echo 0)
+  else
+    alloc=$(pvesh get /nodes/$node/qemu --output-format json \
+      | jq '[.[] | (.cpus // .maxcpu // 0)] | add // 0' \
+      || echo 0)
+  fi
+
+  printf "%-20s %-16s %-12s\n" "$node" "$alloc" "$hostcpu"
+done < <(
+  jq -r 'sort_by(.node)[] | "\(.node)\t\(.status)\t\(.maxcpu // 0)"' <<<"$nodes_json"
+)
