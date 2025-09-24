@@ -1,67 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ceph per-OSD DB/WAL usage + BlueStore/BlueFS cache + memory target
+# Node-aware (Option B): keeps only OSDs whose CRUSH 'host' == this node (or --node override).
+# Needs: ceph, jq, awk
+
+# -------- args --------
+NODE_OVERRIDE=""
+SCAN_ALL=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --node) NODE_OVERRIDE="${2:-}"; shift 2;;
+    --all)  SCAN_ALL=true; shift;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: ceph-osd-mem-dbwal.sh [--node <crush-host>] [--all]
+  --node <crush-host>  : treat this CRUSH host name as "local"
+  --all                : do not filter; scan every OSD in the cluster
+USAGE
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 1;;
+  esac
+done
+
+# -------- util --------
 bytes_to_gib() { awk -v b="${1:-0}" 'BEGIN{printf "%d", int(b/1073741824)}'; }
 bytes_to_mib() { awk -v b="${1:-0}" 'BEGIN{printf "%d", int(b/1048576)}'; }
 
-# Get a single config value safely; empty if unset.
+# Safe single-key fetch; returns empty if unset
 ceph_get_cfg() {
   local who="$1" key="$2" val=""
-  # Try daemon-local override first (fast, precise)
   if val="$(ceph config get "$who" "$key" 2>/dev/null | tr -d '[:space:]')"; then
-    echo "$val"
-    return 0
+    echo "$val"; return 0
   fi
-  # Fallback to global (less precise but fine)
   if val="$(ceph config get mon "$key" 2>/dev/null | tr -d '[:space:]')"; then
-    echo "$val"
-    return 0
+    echo "$val"; return 0
   fi
   echo ""
 }
 
-# Determine per-OSD memory target without parsing JSON blobs
 get_osd_mem_target_bytes() {
   local osd="$1" v auto=""
   v="$(ceph_get_cfg "osd.$osd" osd_memory_target)"
   auto="$(ceph_get_cfg "osd.$osd" osd_memory_target_autotune)"
   if [[ -n "$v" && "$v" =~ ^[0-9]+$ && "$v" -gt 0 ]]; then
-    echo "$v osd_memory_target ${auto:-false}"
-    return
+    echo "$v osd_memory_target ${auto:-false}"; return
   fi
-  # Fallbacks: legacy bluestore cache sizes
   v="$(ceph_get_cfg "osd.$osd" bluestore_cache_size)"
   if [[ -n "$v" && "$v" =~ ^[0-9]+$ && "$v" -gt 0 ]]; then
     echo "$v bluestore_cache_size false"; return
   fi
   local vh vs
-  vh="$(ceph_get_cfg "osd.$osd" bluestore_cache_size_hdd)"
-  vs="$(ceph_get_cfg "osd.$osd" bluestore_cache_size_ssd)"
-  if [[ "$vh" =~ ^[0-9]+$ || "$vs" =~ ^[0-9]+$ ]]; then
-    [[ ! "$vh" =~ ^[0-9]+$ ]] && vh=0
-    [[ ! "$vs" =~ ^[0-9]+$ ]] && vs=0
-    if (( vs > vh )); then
-      echo "$vs bluestore_cache_size_ssd false"
-    else
-      echo "$vh bluestore_cache_size_hdd false"
-    fi
+  vh="$(ceph_get_cfg "osd.$osd" bluestore_cache_size_hdd)"; [[ "$vh" =~ ^[0-9]+$ ]] || vh=0
+  vs="$(ceph_get_cfg "osd.$osd" bluestore_cache_size_ssd)"; [[ "$vs" =~ ^[0-9]+$ ]] || vs=0
+  if (( vh>0 || vs>0 )); then
+    if (( vs > vh )); then echo "$vs bluestore_cache_size_ssd false"; else echo "$vh bluestore_cache_size_hdd false"; fi
     return
   fi
-  # Final default ~4GiB
-  echo "4294967296 default false"
+  echo "4294967296 default false"   # ~4 GiB fallback
 }
 
+# Determine if the given OSD belongs to the "local" node (CRUSH host)
+LOCAL_SHORT="$(hostname -s || true)"; LOCAL_FQDN="$(hostname -f || true)"; LOCAL_HOST="$(hostname || true)"
+is_local_osd() {
+  $SCAN_ALL && return 0
+  local id="$1" host
+  host="$(ceph osd find "$id" -f json 2>/dev/null | jq -r '.crush_location.host // empty')"
+  [[ -z "$host" ]] && return 1
+  if [[ -n "$NODE_OVERRIDE" ]]; then
+    [[ "$host" == "$NODE_OVERRIDE" ]] && return 0 || return 1
+  fi
+  # match against typical hostname variants; normalize to shortname too
+  local short="${LOCAL_SHORT%%.*}"
+  if [[ "$host" == "$LOCAL_SHORT" || "$host" == "$LOCAL_FQDN" || "$host" == "$LOCAL_HOST" || "$host" == "${short}" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# -------- totals --------
 tot_db_used=0; tot_db_total=0; tot_db_res=0
 tot_wal_used=0; tot_wal_total=0; tot_wal_res=0
 tot_cache_bytes=0; tot_mem_target=0
 
 echo "== Per-OSD BlueFS/BlueStore usage & memory =="
+
+# Loop all OSDs but act only on those mapped to this node (unless --all)
 for i in $(ceph osd ls); do
-  PERF_JSON="$(ceph daemon osd.$i perf dump 2>/dev/null || true)"
-  if [[ -z "$PERF_JSON" ]]; then
-    echo "osd.$i  (no perf dump available)"; continue
+  if ! is_local_osd "$i"; then
+    continue
   fi
 
+  PERF_JSON="$(ceph daemon osd.$i perf dump 2>/dev/null || true)"
+  [[ -z "$PERF_JSON" ]] && { echo "osd.$i  (no perf dump available)"; continue; }
+
+  # Extract metrics
   read -r du dt dr wu wt wr cache_bytes cache_brief <<<"$(jq -r '
     def n: (tonumber? // 0);
     def find($k): [.. | objects | select(has($k)) | .[$k]] | first;
@@ -108,6 +142,7 @@ for i in $(ceph osd ls); do
 
   read -r mem_target mem_src autotune <<<"$(get_osd_mem_target_bytes "$i")"
 
+  # Totals
   tot_db_used=$(( tot_db_used + du ))
   tot_db_total=$(( tot_db_total + dt ))
   tot_db_res=$(( tot_db_res + dr ))
@@ -117,6 +152,7 @@ for i in $(ceph osd ls); do
   tot_cache_bytes=$(( tot_cache_bytes + cache_bytes ))
   tot_mem_target=$(( tot_mem_target + mem_target ))
 
+  # Pretty
   du_g=$(bytes_to_gib "$du"); dt_g=$(bytes_to_gib "$dt")
   wu_g=$(bytes_to_gib "$wu"); wt_g=$(bytes_to_gib "$wt")
   dr_g=$(bytes_to_gib "$dr"); wr_g=$(bytes_to_gib "$wr")
@@ -127,21 +163,15 @@ for i in $(ceph osd ls); do
   [[ "$dt" -gt 0 ]] && db_pct=$(( du*100/dt ))
   [[ "$wt" -gt 0 ]] && wal_pct=$(( wu*100/wt ))
   [[ "$mem_target" -gt 0 ]] && cache_vs_target=$(( cache_bytes*100/mem_target ))
+  headroom_mib=$(( (mem_target - cache_bytes) / 1048576 ))
 
-  printf "osd.%-3s  db=%s/%sGiB(res=%sGiB) db_pct=%s%%  wal=%s/%sGiB(res=%sGiB) wal_pct=%s%%  cache=%sMiB  target=%sGiB(%s)  cache%%=~%s%%" \
+  printf "osd.%-3s  db=%s/%sGiB(res=%sGiB) db_pct=%s%%  wal=%s/%sGiB(res=%sGiB) wal_pct=%s%%  cache=%sMiB  target=%sGiB(%s)  cache%%=~%s%%  headroom=~%dMiB" \
     "$i" "$du_g" "$dt_g" "$dr_g" "$db_pct" \
     "$wu_g" "$wt_g" "$wr_g" "$wal_pct" \
-    "$cache_m" "$mtarget_g" "$mem_src" "$cache_vs_target"
+    "$cache_m" "$mtarget_g" "$mem_src" "$cache_vs_target" "$headroom_mib"
 
-  if [[ "$mem_target" -gt 0 ]]; then
-    headroom_mib=$(( (mem_target - cache_bytes) / 1048576 ))
-    [[ $headroom_mib -lt 0 ]] && printf "  [HOT]"
-    printf "  headroom=~%dMiB" "$headroom_mib"
-  fi
-
-  if [[ -n "${cache_brief// }" ]]; then
-    printf "  [%s]" "$cache_brief"
-  fi
+  if (( cache_bytes > mem_target )); then printf "  [HOT]"; fi
+  [[ -n "${cache_brief// }" ]] && printf "  [%s]" "$cache_brief"
   printf "\n"
 done
 
@@ -151,8 +181,8 @@ echo "== Cluster summary =="
 if OSD_DF_JSON="$(ceph osd df --format json 2>/dev/null || true)"; [[ -n "$OSD_DF_JSON" ]]; then
   read -r raw_kb raw_kb_used <<<"$(jq -r '
     (.nodes // []) as $n |
-    ( [$n[]?.kb]       | add // 0 ) as $kb |
-    ( [$n[]?.kb_used]  | add // 0 ) as $used |
+    ( [$n[]?.kb]      | add // 0 ) as $kb |
+    ( [$n[]?.kb_used] | add // 0 ) as $used |
     "\($kb) \($used)"
   ' <<<"$OSD_DF_JSON")"
   raw_total_bytes=$(( raw_kb * 1024 ))
