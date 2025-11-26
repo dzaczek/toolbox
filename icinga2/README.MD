@@ -1,7 +1,7 @@
 # Icinga Plugin: check\_opensearch.pl
 
 ## Overview
-
+![schema](./doc.png)
 **check\_opensearch.pl** is a lightweight monitoring plugin designed for **OpenSearch** and **Elasticsearch** clusters.
 
 Unlike standard plugins, this script is **"Pure Perl"** and dependency-free. It does **not** require installing external CPAN modules (like `JSON` or `LWP::UserAgent`), which keeps your monitoring server clean. Instead, it utilizes the system's native `curl` binary and Perl Regular Expressions to parse data.
