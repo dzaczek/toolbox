@@ -369,7 +369,7 @@ printf 'redis_exporter installation started at %s\n' "$(timestamp)"
 printf 'Script: %s\n' "$SCRIPT_NAME"
 
 install_dependencies() {
-    local -a required=(curl tar sha256sum useradd getent ss systemctl)
+    local -a required=(curl tar sha256sum useradd getent ss systemctl python3)
     local -a missing=()
     local command_name
 
@@ -386,13 +386,13 @@ install_dependencies() {
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
         apt-get install -y --no-install-recommends \
-            ca-certificates curl tar coreutils iproute2 passwd
+            ca-certificates curl tar coreutils iproute2 passwd python3
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y ca-certificates curl tar coreutils iproute shadow-utils
+        dnf install -y ca-certificates curl tar coreutils iproute shadow-utils python3
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y ca-certificates curl tar coreutils iproute shadow-utils
+        yum install -y ca-certificates curl tar coreutils iproute shadow-utils python3
     elif command -v zypper >/dev/null 2>&1; then
-        zypper --non-interactive install ca-certificates curl tar coreutils iproute2 shadow
+        zypper --non-interactive install ca-certificates curl tar coreutils iproute2 shadow python3
     else
         die "Cannot install prerequisites: supported package manager not found. Missing: ${missing[*]}"
     fi
@@ -604,8 +604,30 @@ curl --fail --silent --show-error --location --retry 3 \
     -o "$release_json" "$release_api" || \
     die "Could not download GitHub release metadata (API rate limit or network problem)."
 
-EXPORTER_VERSION="$(sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' "$release_json" | head -n1)"
-[[ -n "$EXPORTER_VERSION" ]] || die "Could not parse tag_name from GitHub release metadata."
+release_parse_error="$TEMP_DIR/release-parse.error"
+if ! EXPORTER_VERSION="$(python3 - "$release_json" 2>"$release_parse_error" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"invalid JSON: {exc}")
+
+tag = payload.get("tag_name") if isinstance(payload, dict) else None
+if not isinstance(tag, str) or not tag.strip():
+    message = payload.get("message") if isinstance(payload, dict) else None
+    detail = f"; GitHub message: {message}" if message else ""
+    raise SystemExit(f"tag_name is missing or empty{detail}")
+
+print(tag.strip())
+PY
+)"; then
+    parse_detail="$(tr '\n' ' ' <"$release_parse_error" | cut -c1-300)"
+    die "Could not parse tag_name from GitHub release metadata: ${parse_detail:-unknown JSON error}."
+fi
 
 version_ge() {
     local current="${1#v}" minimum="${2#v}"
@@ -616,16 +638,23 @@ version_ge "$EXPORTER_VERSION" "$MIN_EXPORTER_VERSION" || \
 
 asset_name="redis_exporter-${EXPORTER_VERSION}.linux-${EXPORTER_ARCH}.tar.gz"
 asset_url="https://github.com/oliver006/redis_exporter/releases/download/${EXPORTER_VERSION}/${asset_name}"
-expected_sha256="$(awk -v target="\"name\": \"${asset_name}\"" '
-    index($0, target) { found=1 }
-    found && /"digest"[[:space:]]*:[[:space:]]*"sha256:/ {
-        line=$0
-        sub(/^.*"digest"[[:space:]]*:[[:space:]]*"sha256:/, "", line)
-        sub(/".*$/, "", line)
-        print line
-        exit
-    }
-' "$release_json")"
+expected_sha256="$(python3 - "$release_json" "$asset_name" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+target = sys.argv[2]
+for asset in payload.get("assets", []):
+    if asset.get("name") != target:
+        continue
+    digest = asset.get("digest")
+    if isinstance(digest, str) and digest.startswith("sha256:"):
+        print(digest.removeprefix("sha256:"))
+    break
+PY
+)"
 
 archive="$TEMP_DIR/$asset_name"
 log "Downloading ${asset_name}."
