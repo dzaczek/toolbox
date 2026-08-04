@@ -506,12 +506,16 @@ read_secret_file() {
 
 redis_cli_ping() {
     local port="$1" user="$2" secret="$3" output_variable="$4"
-    local output rc
+    # Do not name this local variable "output": the caller deliberately passes
+    # its own local variable named "output". Bash uses dynamic scoping, so a
+    # same-named local here would make printf -v update this function's copy
+    # instead of returning the Redis response to validate_local_auth().
+    local captured_output rc
     local -a args=(-h 127.0.0.1 -p "$port" --no-auth-warning)
     [[ -z "$user" ]] || args+=(--user "$user")
 
     set +e
-    output="$({
+    captured_output="$({
         if [[ -n "$secret" ]]; then
             export REDISCLI_AUTH="$secret"
         else
@@ -521,7 +525,7 @@ redis_cli_ping() {
     } 2>&1)"
     rc=$?
     set -e
-    printf -v "$output_variable" '%s' "$output"
+    printf -v "$output_variable" '%s' "$captured_output"
     return "$rc"
 }
 
